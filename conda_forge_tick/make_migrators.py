@@ -987,13 +987,18 @@ def _load(name):
         return make_from_lazy_json_data(lzj.data)
 
 
-def load_migrators(skip_paused: bool = True) -> MutableSequence[Migrator]:
+def load_migrators(
+    skip_paused: bool = True, filter_name: str | None = None
+) -> MutableSequence[Migrator]:
     """Load all current migrators.
 
     Parameters
     ----------
     skip_paused : bool, optional
         Whether to skip paused migrators, defaults to True.
+    filter_name : str, optional
+        Filter migrators by name (case-insensitive). Only migrators matching this name
+        (either by migrator.name or migrator.report_name) will be loaded.
 
     Returns
     -------
@@ -1004,6 +1009,12 @@ def load_migrators(skip_paused: bool = True) -> MutableSequence[Migrator]:
     pinning_migrators = []
     longterm_migrators = []
     all_names = get_all_keys_for_hashmap("migrators")
+
+    # Filter names if specified
+    if filter_name:
+        filter_lower = filter_name.lower()
+        all_names = [n for n in all_names if filter_lower in n.lower()]
+
     with executor("process", 2) as pool:
         futs = [pool.submit(_load, name) for name in all_names]
 

@@ -897,27 +897,9 @@ def add_nvtools_migrator(
 
 
 def _make_version_migrator(
-    gx: nx.DiGraph | None = None,
+    gx: nx.DiGraph,
     dry_run: bool = False,
 ) -> Version:
-    """Make a version migrator.
-    
-    Parameters
-    ----------
-    gx : nx.DiGraph, optional
-        The graph to use. If None, loads the graph using load_existing_graph().
-        Passing a graph avoids redundant loading when called from load_migrators().
-    dry_run : bool, optional
-        Whether this is a dry run, defaults to False.
-    
-    Returns
-    -------
-    Version
-        The version migrator instance.
-    """
-    if gx is None:
-        gx = load_existing_graph()
-    
     with fold_log_lines("making version migrator"):
         print("building package import maps and version migrator", flush=True)
         python_nodes = {
@@ -948,26 +930,9 @@ def _make_version_migrator(
 
 
 def initialize_migrators(
-    gx: nx.DiGraph | None = None,
+    gx: nx.DiGraph,
     dry_run: bool = False,
 ) -> MutableSequence[Migrator]:
-    """Initialize migrators.
-    
-    Parameters
-    ----------
-    gx : nx.DiGraph, optional
-        The graph to use. If None, loads the graph using load_existing_graph().
-    dry_run : bool, optional
-        Whether this is a dry run, defaults to False.
-    
-    Returns
-    -------
-    list of Migrator
-        The list of initialized migrators.
-    """
-    if gx is None:
-        gx = load_existing_graph(deep_copy=False)
-    
     migrators: List[Migrator] = []
 
     add_arch_migrate(migrators, gx)
@@ -1022,23 +987,6 @@ def _load(name):
         return make_from_lazy_json_data(lzj.data)
 
 
-def _get_migrator_workers() -> int:
-    """Get the number of worker processes for migrator loading from environment variable.
-    
-    Returns
-    -------
-    int
-        Number of workers, defaults to 4 if not set.
-    """
-    try:
-        workers = int(os.environ.get("CF_TICK_MIGRATOR_WORKERS", "4"))
-        # Ensure at least 1 worker
-        result = max(1, workers)
-        return result
-    except (ValueError, TypeError):
-        return 4
-
-
 def load_migrators(
     skip_paused: bool = True, filter_name: str | None = None
 ) -> MutableSequence[Migrator]:
@@ -1067,13 +1015,7 @@ def load_migrators(
         filter_lower = filter_name.lower()
         all_names = [n for n in all_names if filter_lower in n.lower()]
 
-    # Load graph once to reuse across migrators
-    # Use cached reference to avoid deep copy
-    gx = load_existing_graph(deep_copy=False)
-
-    # Get configurable number of workers
-    num_workers = _get_migrator_workers()
-    with executor("process", num_workers) as pool:
+    with executor("process", 2) as pool:
         futs = [pool.submit(_load, name) for name in all_names]
 
         for fut in tqdm.tqdm(
@@ -1096,27 +1038,21 @@ def load_migrators(
             else:
                 migrators.append(migrator)
 
-    # Pass the already-loaded graph to avoid reloading
-    # Only create version migrator if filter matches or no filter is specified
     version_migrator = None
     if filter_name is None:
-        version_migrator = _make_version_migrator(gx)
+        version_migrator = _make_version_migrator(load_existing_graph())
     else:
-        # Check if filter matches version migrator name or report_name
         filter_lower = filter_name.lower()
-        version_name_lower = "version"  # Version migrator name is "Version"
+        version_name_lower = "version"
         if filter_lower in version_name_lower or version_name_lower in filter_lower:
-            version_migrator = _make_version_migrator(gx)
+            version_migrator = _make_version_migrator(load_existing_graph())
 
     RNG.shuffle(pinning_migrators)
     RNG.shuffle(longterm_migrators)
-    
-    # Only add version migrator if it was created
     if version_migrator is not None:
         migrators = [version_migrator] + migrators + pinning_migrators + longterm_migrators
     else:
         migrators = migrators + pinning_migrators + longterm_migrators
-    
     return migrators
 
 
@@ -1174,10 +1110,8 @@ def dump_migrators(migrators: MutableSequence[Migrator], dry_run: bool = False) 
 
 
 def main(ctx: CliContext) -> None:
-    # Load graph once and reuse it
-    gx = load_existing_graph(deep_copy=False)
     migrators = initialize_migrators(
-        gx,
+        load_existing_graph(),
         dry_run=ctx.dry_run,
     )
     dump_migrators(

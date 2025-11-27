@@ -1,7 +1,6 @@
 import copy
 import datetime
 import glob
-import logging
 import os
 import subprocess
 import tempfile
@@ -17,8 +16,6 @@ import tqdm
 import yaml
 from conda.models.version import VersionOrder
 from graphviz import Source
-
-logger = logging.getLogger(__name__)
 
 from conda_forge_tick.contexts import FeedstockContext, MigratorSessionContext
 from conda_forge_tick.lazy_json_backends import LazyJson, get_all_keys_for_hashmap
@@ -324,9 +321,7 @@ def graph_migrator_status(
         else:
             pr_is_archiveable = False
 
-        filter_result = migrator.filter(attrs)
-        buildable = not filter_result
-        
+        buildable = not migrator.filter(attrs)
         fntc = "black"
         status_icon = ""
         if manually_done:
@@ -405,7 +400,6 @@ def graph_migrator_status(
             for k in sorted(gx2.successors(node))
             if not gx2[k].get("payload", {}).get("archived", False)
         ]
-        
         if node in out["not-solvable"] or node in out["bot-error"]:
             node_metadata["pre_pr_migrator_status"] = (
                 attrs.get("pr_info", {})
@@ -432,8 +426,7 @@ def graph_migrator_status(
                     timestamp = dateutil.parser.parse(timestamp)
                     if timestamp.tzinfo is None:
                         timestamp = timestamp.replace(tzinfo=datetime.timezone.utc)
-                    pass
-                    # node_metadata[timestamp_field] = timestamp.isoformat()
+                    node_metadata[timestamp_field] = timestamp.isoformat()
 
     # Add fake migrator nodes to awaiting-parents BEFORE sorting
     for node_name in gx2.nodes():
@@ -469,7 +462,6 @@ def graph_migrator_status(
 
     out2["_feedstock_status"] = feedstock_metadata
     
-    # Add edges for actual dependencies
     for (e0, e1), edge_attrs in gx2.edges.items():
         # Skip edges involving fake migrator nodes - handle separately
         if e0.startswith("migrator_") or e1.startswith("migrator_"):
@@ -478,8 +470,8 @@ def graph_migrator_status(
         if (
             e0 not in out["done"]
             and e1 not in out["done"]
-            and not gx2.nodes[e0].get("payload", {}).get("archived", False)
-            and not gx2.nodes[e1].get("payload", {}).get("archived", False)
+            and not gx2.nodes[e0]["payload"].get("archived", False)
+            and not gx2.nodes[e1]["payload"].get("archived", False)
         ):
             gv.edge(e0, e1)
     
@@ -571,8 +563,7 @@ def main(migrator_filter: str | None = None) -> None:
                 0
             ]["version"],
         )
-        # Use cached graph reference (read-only) to avoid deep copy
-        gx = load_existing_graph(deep_copy=False)
+        gx = load_existing_graph()
         mctx = MigratorSessionContext(
             graph=gx,
             smithy_version=smithy_version,

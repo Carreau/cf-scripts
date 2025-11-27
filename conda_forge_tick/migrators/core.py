@@ -477,11 +477,9 @@ class Migrator:
         bool :
             True if node is to be skipped
         """
-        filter_not_in = self.filter_not_in_migration(attrs, not_bad_str_start)
-        filter_migrated = self.filter_node_migrated(attrs, not_bad_str_start)
-        result = filter_not_in or filter_migrated
-        
-        return result
+        return self.filter_not_in_migration(
+            attrs, not_bad_str_start
+        ) or self.filter_node_migrated(attrs, not_bad_str_start)
 
     def filter_not_in_migration(
         self, attrs: "AttrsTypedDict", not_bad_str_start: str = ""
@@ -491,19 +489,19 @@ class Migrator:
         # don't run on bad nodes
 
         __name = attrs.get("name", "")
-        __feedstock_name = attrs.get("feedstock_name", "")
 
-        archived = attrs.get("archived", False)
-        bad_attr = _parse_bad_attr(attrs, not_bad_str_start)
-        schema_skip = skip_migrator_due_to_schema(attrs, self.allowed_schema_versions)
-
-        if archived:
+        if attrs.get("archived", False):
             logger.debug("%s: archived", __name)
 
+        bad_attr = _parse_bad_attr(attrs, not_bad_str_start)
         if bad_attr:
             logger.debug("%s: bad attr - %s", __name, bad_attr)
 
-        return archived or bad_attr or schema_skip
+        return (
+            attrs.get("archived", False)
+            or bad_attr
+            or skip_migrator_due_to_schema(attrs, self.allowed_schema_versions)
+        )
 
     def filter_node_migrated(
         self, attrs: "AttrsTypedDict", not_bad_str_start: str = ""
@@ -512,7 +510,6 @@ class Migrator:
         # don't run on things we've already done
 
         __name = attrs.get("name", "")
-        __feedstock_name = attrs.get("feedstock_name", "")
 
         pr_data = frozen_to_json_friendly(self.migrator_uid(attrs))
         migrator_uid: "MigrationUidTypedDict" = typing.cast(
@@ -524,7 +521,6 @@ class Migrator:
             for z in attrs.get("pr_info", {}).get("PRed", [])  # type: ignore[call-overload]
         )
         already_pred = migrator_uid in already_migrated_uids
-        
         if already_pred:
             ind = already_migrated_uids.index(migrator_uid)
             logger.debug("%s: already PRed: uid: %s", __name, migrator_uid)
@@ -917,43 +913,39 @@ class GraphMigrator(Migrator):
         # Check if all upstreams have been built
         if self.graph is None:
             raise ValueError("graph is None")
-        
-        predecessors = list(self.graph.predecessors(attrs["feedstock_name"]))
-        ignored_deps = self.ignored_deps_per_node.get(
-            attrs.get("feedstock_name", None),
-            [],
-        )
-        
         for node, payload in _gen_active_feedstocks_payloads(
-            predecessors,
+            self.graph.predecessors(attrs["feedstock_name"]),
             self.graph,
         ):
-            if node in ignored_deps:
+            if node in self.ignored_deps_per_node.get(
+                attrs.get("feedstock_name", None),
+                [],
+            ):
                 continue
 
             muid = frozen_to_json_friendly(self.migrator_uid(payload))
-            pred_pr_ed = payload.get("pr_info", {}).get("PRed", [])
-            sanitized_muids = _sanitized_muids(pred_pr_ed)
-            muid_in_pr_ed = muid in sanitized_muids
 
-            if not muid_in_pr_ed:
+            if muid not in _sanitized_muids(
+                payload.get("pr_info", {}).get("PRed", []),
+            ):
                 logger.debug("not yet built: %s", node)
                 return True
 
             # This is due to some PRed_json loss due to bad graph deploy outage
-            m_pred_json = None
-            for m_pred_json_candidate in pred_pr_ed:
-                if m_pred_json_candidate["data"] == muid["data"]:
-                    m_pred_json = m_pred_json_candidate
+            for m_pred_json in payload.get("pr_info", {}).get("PRed", []):
+                if m_pred_json["data"] == muid["data"]:
                     break
+            else:
+                m_pred_json = None
 
             # note that if the bot is missing the PR we assume it is open
             # so that errors halt the migration and can be fixed
-            if m_pred_json:
-                pr_state = m_pred_json.get("PR", {"state": "open"}).get("state", "")
-                if pr_state == "open":
-                    logger.debug("not yet built: %s", node)
-                    return True
+            if (
+                m_pred_json
+                and m_pred_json.get("PR", {"state": "open"}).get("state", "") == "open"
+            ):
+                logger.debug("not yet built: %s", node)
+                return True
 
         return False
 
@@ -974,37 +966,30 @@ class GraphMigrator(Migrator):
 
     def filter_node_migrated(self, attrs, not_bad_str_start=""):
         name = attrs.get("name", "")
-        __feedstock_name = attrs.get("feedstock_name", "")
 
         # If in top level or in a cycle don't check for upstreams just build
         is_top_level = (attrs["feedstock_name"] in self.top_level) or (
             attrs["feedstock_name"] in self.cycles
         )
-        
         if is_top_level:
             logger.debug("not filtered %s: top level", name)
             node_is_ready = True
         else:
             if name == "conda-forge-pinning":
-                all_issued = self.all_predecessors_issued(attrs=attrs)
-                if all_issued:
+                if self.all_predecessors_issued(attrs=attrs):
                     node_is_ready = True
                 else:
                     logger.debug("filtered %s: pinning parents not issued", name)
                     node_is_ready = False
             else:
                 # Check if all upstreams have been built
-                preds_not_built = self.predecessors_not_yet_built(attrs=attrs)
-                if preds_not_built:
+                if self.predecessors_not_yet_built(attrs=attrs):
                     logger.debug("filter %s: parents not built", name)
                     node_is_ready = False
                 else:
                     node_is_ready = True
 
-        super_result = super().filter_node_migrated(attrs, "Upstream:")
-        final_result = (not node_is_ready) or super_result
-
-        return final_result
+        return (not node_is_ready) or super().filter_node_migrated(attrs, "Upstream:")
 
     def migrator_uid(self, attrs: "AttrsTypedDict") -> "MigrationUidTypedDict":
         if self.name is None:

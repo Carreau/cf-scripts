@@ -1050,11 +1050,31 @@ def _run_migrator(
 
         possible_nodes = list(migrator.order(effective_graph, mctx.graph))
 
+        # Check if pyside2 is in possible nodes
+        pyside2_in_nodes = any(
+            node_name == "pyside2-feedstock" or 
+            (node_name in effective_graph.nodes and 
+             effective_graph.nodes[node_name].get("payload", {}).get("name") == "pyside2")
+            for node_name in possible_nodes
+        )
+        if pyside2_in_nodes:
+            print(f"[DEBUG pyside2 auto_tick] pyside2 found in possible_nodes for migrator {migrator.two_part_name}", flush=True)
+            print(f"[DEBUG pyside2 auto_tick] total possible_nodes: {len(possible_nodes)}", flush=True)
+            pyside2_nodes = [n for n in possible_nodes if n == "pyside2-feedstock" or 
+                           (n in effective_graph.nodes and 
+                            effective_graph.nodes[n].get("payload", {}).get("name") == "pyside2")]
+            print(f"[DEBUG pyside2 auto_tick] pyside2 nodes: {pyside2_nodes}", flush=True)
+
         # version debugging info
         if isinstance(migrator, Version):
             print("possible version migrations:", flush=True)
             for node_name in possible_nodes:
                 with effective_graph.nodes[node_name]["payload"] as attrs:
+                    name = attrs.get("name", "")
+                    feedstock_name = attrs.get("feedstock_name", "")
+                    is_pyside2 = name == "pyside2" or feedstock_name == "pyside2-feedstock"
+                    if is_pyside2:
+                        print(f"[DEBUG pyside2 auto_tick] VERSION: processing {node_name} (name={name}, feedstock={feedstock_name})", flush=True)
                     with attrs["version_pr_info"] as vpri:
                         print(
                             "    node|curr|new|attempts: %s|%s|%s|%f"
@@ -1075,6 +1095,11 @@ def _run_migrator(
             print("order of possible migrations:", flush=True)
             for node_name in possible_nodes:
                 with effective_graph.nodes[node_name]["payload"] as attrs:
+                    name = attrs.get("name", "")
+                    feedstock_name = attrs.get("feedstock_name", "")
+                    is_pyside2 = name == "pyside2" or feedstock_name == "pyside2-feedstock"
+                    if is_pyside2:
+                        print(f"[DEBUG pyside2 auto_tick] NON-VERSION: processing {node_name} (name={name}, feedstock={feedstock_name})", flush=True)
                     with attrs["pr_info"] as pri:
                         attempts = pri.get("pre_pr_migrator_attempts", {}).get(
                             migrator_name, 0
@@ -1099,7 +1124,29 @@ def _run_migrator(
         ):
             return 0
 
-    for node_name in possible_nodes:
+    for idx, node_name in enumerate(possible_nodes):
+        # Debug print for pyside2
+        name_check = None
+        feedstock_name_check = None
+        try:
+            with mctx.graph.nodes[node_name]["payload"] as attrs_check:
+                name_check = attrs_check.get("name", "")
+                feedstock_name_check = attrs_check.get("feedstock_name", "")
+        except Exception:
+            pass
+        
+        is_pyside2_node = name_check == "pyside2" or feedstock_name_check == "pyside2-feedstock" or node_name == "pyside2-feedstock"
+        
+        # Print progress for all packages (every 100th or pyside2)
+        if is_pyside2_node or idx % 100 == 0:
+            print(f"[DEBUG auto_tick] Processing package {idx+1}/{len(possible_nodes)}: {node_name} (name={name_check}, feedstock={feedstock_name_check})", flush=True)
+        
+        if is_pyside2_node:
+            print(f"[DEBUG pyside2 auto_tick] ===== STARTING PROCESSING OF {node_name} =====", flush=True)
+            print(f"[DEBUG pyside2 auto_tick] migrator: {migrator.two_part_name} ({migrator.__class__.__name__})", flush=True)
+            print(f"[DEBUG pyside2 auto_tick] node_name: {node_name}", flush=True)
+            print(f"[DEBUG pyside2 auto_tick] name_check: {name_check}, feedstock_name_check: {feedstock_name_check}", flush=True)
+        
         with (
             fold_log_lines(
                 "%s IS MIGRATING %s"
@@ -1110,14 +1157,23 @@ def _run_migrator(
             ),
             mctx.graph.nodes[node_name]["payload"] as attrs,
         ):
+            if is_pyside2_node:
+                print(f"[DEBUG pyside2 auto_tick] got attrs: name={attrs.get('name', 'N/A')}, feedstock_name={attrs.get('feedstock_name', 'N/A')}", flush=True)
+                print(f"[DEBUG pyside2 auto_tick] archived={attrs.get('archived', False)}", flush=True)
+            
             # Don't let CI timeout, break ahead of the timeout so we make certain
             # to write to the repo
             if _is_migrator_done(
                 _mg_start, good_prs, time_per, migrator.pr_limit, tried_prs, start_time
             ):
+                if is_pyside2_node:
+                    print(f"[DEBUG pyside2 auto_tick] migrator done, breaking", flush=True)
                 break
 
             base_branches = migrator.get_possible_feedstock_branches(attrs)
+            
+            if is_pyside2_node:
+                print(f"[DEBUG pyside2 auto_tick] base_branches: {base_branches}", flush=True)
 
             fctx = FeedstockContext(
                 feedstock_name=attrs["feedstock_name"],
@@ -1132,9 +1188,15 @@ def _run_migrator(
 
             try:
                 for base_branch in base_branches:
+                    if is_pyside2_node:
+                        print(f"[DEBUG pyside2 auto_tick] processing branch: {base_branch}", flush=True)
                     with fctx.with_attrs_branch(base_branch):
                         # skip things that do not get migrated
+                        if is_pyside2_node:
+                            print(f"[DEBUG pyside2 auto_tick] calling migrator.filter(attrs) for branch {base_branch}...", flush=True)
                         if migrator.filter(attrs):
+                            if is_pyside2_node:
+                                print(f"[DEBUG pyside2 auto_tick] FILTER RETURNED TRUE - SKIPPING {node_name} on branch {base_branch}", flush=True)
                             if (
                                 logging.getLogger(
                                     "conda_forge_tick"
@@ -1148,6 +1210,9 @@ def _run_migrator(
                             )
                             continue
 
+                        if is_pyside2_node:
+                            print(f"[DEBUG pyside2 auto_tick] FILTER RETURNED FALSE - PROCEEDING WITH MIGRATION for {node_name} on branch {base_branch}", flush=True)
+                        
                         with fold_log_lines(
                             "%s IS MIGRATING %s:%s"
                             % (
@@ -1156,6 +1221,8 @@ def _run_migrator(
                                 base_branch,
                             )
                         ):
+                            if is_pyside2_node:
+                                print(f"[DEBUG pyside2 auto_tick] calling _run_migrator_on_feedstock_branch...", flush=True)
                             tried_prs += 1
                             good_prs, break_loop = _run_migrator_on_feedstock_branch(
                                 attrs=attrs,
@@ -1168,8 +1235,12 @@ def _run_migrator(
                                 good_prs=good_prs,
                             )
                             if break_loop:
+                                if is_pyside2_node:
+                                    print(f"[DEBUG pyside2 auto_tick] break_loop=True, breaking", flush=True)
                                 break
             finally:
+                if is_pyside2_node:
+                    print(f"[DEBUG pyside2 auto_tick] ===== FINISHED PROCESSING {node_name} =====", flush=True)
                 # do this but it is crazy
                 gc.collect()
 

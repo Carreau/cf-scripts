@@ -897,9 +897,32 @@ def add_nvtools_migrator(
 
 
 def _make_version_migrator(
-    gx: nx.DiGraph,
+    gx: nx.DiGraph | None = None,
     dry_run: bool = False,
 ) -> Version:
+    """Make a version migrator.
+    
+    Parameters
+    ----------
+    gx : nx.DiGraph, optional
+        The graph to use. If None, loads the graph using load_existing_graph().
+        Passing a graph avoids redundant loading when called from load_migrators().
+    dry_run : bool, optional
+        Whether this is a dry run, defaults to False.
+    
+    Returns
+    -------
+    Version
+        The version migrator instance.
+    """
+    print(f"[DEBUG _make_version_migrator] called with gx={'provided' if gx is not None else 'None'}, dry_run={dry_run}", flush=True)
+    if gx is None:
+        print(f"[DEBUG _make_version_migrator] loading graph...", flush=True)
+        gx = load_existing_graph()
+        print(f"[DEBUG _make_version_migrator] loaded graph with {len(gx.nodes)} nodes", flush=True)
+    else:
+        print(f"[DEBUG _make_version_migrator] using provided graph with {len(gx.nodes)} nodes", flush=True)
+    
     with fold_log_lines("making version migrator"):
         print("building package import maps and version migrator", flush=True)
         python_nodes = {
@@ -913,6 +936,7 @@ def _make_version_migrator(
                 if node_name in python_nodes
             ],
         )
+        print(f"[DEBUG _make_version_migrator] found {len(python_nodes)} python nodes", flush=True)
         version_migrator = Version(
             python_nodes=python_nodes,
             total_graph=gx,
@@ -925,14 +949,37 @@ def _make_version_migrator(
                 ],
             ),
         )
+        print(f"[DEBUG _make_version_migrator] created version migrator", flush=True)
 
     return version_migrator
 
 
 def initialize_migrators(
-    gx: nx.DiGraph,
+    gx: nx.DiGraph | None = None,
     dry_run: bool = False,
 ) -> MutableSequence[Migrator]:
+    """Initialize migrators.
+    
+    Parameters
+    ----------
+    gx : nx.DiGraph, optional
+        The graph to use. If None, loads the graph using load_existing_graph().
+    dry_run : bool, optional
+        Whether this is a dry run, defaults to False.
+    
+    Returns
+    -------
+    list of Migrator
+        The list of initialized migrators.
+    """
+    print(f"[DEBUG initialize_migrators] called with gx={'provided' if gx is not None else 'None'}, dry_run={dry_run}", flush=True)
+    if gx is None:
+        print(f"[DEBUG initialize_migrators] loading graph...", flush=True)
+        gx = load_existing_graph()
+        print(f"[DEBUG initialize_migrators] loaded graph with {len(gx.nodes)} nodes, id={id(gx)}", flush=True)
+    else:
+        print(f"[DEBUG initialize_migrators] using provided graph with {len(gx.nodes)} nodes, id={id(gx)}", flush=True)
+    
     migrators: List[Migrator] = []
 
     add_arch_migrate(migrators, gx)
@@ -987,6 +1034,25 @@ def _load(name):
         return make_from_lazy_json_data(lzj.data)
 
 
+def _get_migrator_workers() -> int:
+    """Get the number of worker processes for migrator loading from environment variable.
+    
+    Returns
+    -------
+    int
+        Number of workers, defaults to 4 if not set.
+    """
+    try:
+        workers = int(os.environ.get("CF_TICK_MIGRATOR_WORKERS", "4"))
+        # Ensure at least 1 worker
+        result = max(1, workers)
+        print(f"[DEBUG _get_migrator_workers] using {result} workers (from env: {os.environ.get('CF_TICK_MIGRATOR_WORKERS', 'default=4')})", flush=True)
+        return result
+    except (ValueError, TypeError) as e:
+        print(f"[DEBUG _get_migrator_workers] error parsing workers, using default 4: {e}", flush=True)
+        return 4
+
+
 def load_migrators(
     skip_paused: bool = True, filter_name: str | None = None
 ) -> MutableSequence[Migrator]:
@@ -1015,7 +1081,19 @@ def load_migrators(
         filter_lower = filter_name.lower()
         all_names = [n for n in all_names if filter_lower in n.lower()]
 
-    with executor("process", 2) as pool:
+    print(f"[DEBUG load_migrators] loading {len(all_names)} migrators", flush=True)
+    
+    # Load graph once to reuse across migrators
+    # Use cached reference to avoid deep copy
+    print(f"[DEBUG load_migrators] loading graph once for reuse...", flush=True)
+    gx = load_existing_graph(deep_copy=False)
+    print(f"[DEBUG load_migrators] loaded graph with {len(gx.nodes)} nodes, id={id(gx)}", flush=True)
+
+    # Get configurable number of workers
+    num_workers = _get_migrator_workers()
+    
+    print(f"[DEBUG load_migrators] starting executor with {num_workers} workers", flush=True)
+    with executor("process", num_workers) as pool:
         futs = [pool.submit(_load, name) for name in all_names]
 
         for fut in tqdm.tqdm(
@@ -1038,12 +1116,34 @@ def load_migrators(
             else:
                 migrators.append(migrator)
 
-    version_migrator = _make_version_migrator(load_existing_graph())
+    # Pass the already-loaded graph to avoid reloading
+    # Only create version migrator if filter matches or no filter is specified
+    version_migrator = None
+    if filter_name is None:
+        print(f"[DEBUG load_migrators] creating version migrator (no filter)", flush=True)
+        version_migrator = _make_version_migrator(gx)
+        print(f"[DEBUG load_migrators] created version migrator", flush=True)
+    else:
+        # Check if filter matches version migrator name or report_name
+        filter_lower = filter_name.lower()
+        version_name_lower = "version"  # Version migrator name is "Version"
+        if filter_lower in version_name_lower or version_name_lower in filter_lower:
+            print(f"[DEBUG load_migrators] creating version migrator (filter matches: {filter_name})", flush=True)
+            version_migrator = _make_version_migrator(gx)
+            print(f"[DEBUG load_migrators] created version migrator", flush=True)
+        else:
+            print(f"[DEBUG load_migrators] skipping version migrator (filter={filter_name} doesn't match 'version')", flush=True)
 
     RNG.shuffle(pinning_migrators)
     RNG.shuffle(longterm_migrators)
-    migrators = [version_migrator] + migrators + pinning_migrators + longterm_migrators
-
+    
+    # Only add version migrator if it was created
+    if version_migrator is not None:
+        migrators = [version_migrator] + migrators + pinning_migrators + longterm_migrators
+    else:
+        migrators = migrators + pinning_migrators + longterm_migrators
+    
+    print(f"[DEBUG load_migrators] returning {len(migrators)} migrators total", flush=True)
     return migrators
 
 
@@ -1101,12 +1201,18 @@ def dump_migrators(migrators: MutableSequence[Migrator], dry_run: bool = False) 
 
 
 def main(ctx: CliContext) -> None:
-    gx = load_existing_graph()
+    print(f"[DEBUG main] starting migrator initialization, dry_run={ctx.dry_run}", flush=True)
+    # Load graph once and reuse it
+    print(f"[DEBUG main] loading graph...", flush=True)
+    gx = load_existing_graph(deep_copy=False)
+    print(f"[DEBUG main] loaded graph with {len(gx.nodes)} nodes, id={id(gx)}", flush=True)
     migrators = initialize_migrators(
         gx,
         dry_run=ctx.dry_run,
     )
+    print(f"[DEBUG main] initialized {len(migrators)} migrators", flush=True)
     dump_migrators(
         migrators,
         dry_run=ctx.dry_run,
     )
+    print(f"[DEBUG main] completed", flush=True)

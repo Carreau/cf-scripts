@@ -167,6 +167,42 @@ def write_version_migrator_status(migrator, mctx):
         )
 
 
+def _get_waiting_migrators(migrator: Migrator, attrs: dict) -> list[str]:
+    """Get list of migrators that this package is waiting for.
+    
+    Returns empty list if not waiting for any migrators.
+    """
+    from conda_forge_tick.migrators.migration_yaml import MigrationYaml
+    
+    if not isinstance(migrator, MigrationYaml):
+        return []
+    
+    migrator_payload = migrator.loaded_yaml.get("__migrator", {})
+    wait_for_migrators = migrator_payload.get("wait_for_migrators", [])
+    
+    if not wait_for_migrators:
+        return []
+    
+    # Check if we're actually waiting (i.e., migrators not all closed)
+    found_migrators = set()
+    for migration in attrs.get("pr_info", {}).get("PRed", []):
+        name = migration.get("data", {}).get("name", "")
+        if not name or name not in wait_for_migrators:
+            continue
+        found_migrators.add(name)
+        state = migration.get("PR", {}).get("state", "")
+        if state != "closed":
+            # Still waiting for this one
+            return list(wait_for_migrators)
+    
+    # Check if any migrators are missing
+    missing_migrators = set(wait_for_migrators) - found_migrators
+    if missing_migrators:
+        return list(wait_for_migrators)
+    
+    return []
+
+
 def graph_migrator_status(
     migrator: Migrator,
     gx: nx.DiGraph,
@@ -201,130 +237,12 @@ def graph_migrator_status(
     if "conda-forge-pinning" in gx2.nodes():
         gx2.remove_node("conda-forge-pinning")
 
-    # Check if pyside2 and matplotlib are in the graph
-    all_nodes = list(gx2.nodes.keys())
-    pyside2_nodes_in_graph = []
-    matplotlib_nodes_in_graph = []
-    for n in all_nodes:
-        if n == "pyside2" or n == "pyside2-feedstock":
-            pyside2_nodes_in_graph.append(n)
-        elif n == "matplotlib" or n == "matplotlib-feedstock":
-            matplotlib_nodes_in_graph.append(n)
-        else:
-            try:
-                with gx2.nodes[n]["payload"] as attrs:
-                    name = attrs.get("name", "")
-                    feedstock_name = attrs.get("feedstock_name", "")
-                    if (name == "pyside2" or feedstock_name == "pyside2" or 
-                        feedstock_name == "pyside2-feedstock"):
-                        pyside2_nodes_in_graph.append(n)
-                    elif (name == "matplotlib" or feedstock_name == "matplotlib" or 
-                          feedstock_name == "matplotlib-feedstock"):
-                        matplotlib_nodes_in_graph.append(n)
-            except Exception:
-                pass
-    
-    print(f"[DEBUG status_report] Total nodes to process: {len(all_nodes)}", flush=True)
-    if pyside2_nodes_in_graph:
-        print(f"[DEBUG pyside2 status_report] pyside2 found in graph: {pyside2_nodes_in_graph}", flush=True)
-        # Check matplotlib relationship to pyside2
-        for pyside2_node in pyside2_nodes_in_graph:
-            if pyside2_node in gx2.nodes:
-                try:
-                    predecessors = list(gx2.predecessors(pyside2_node))
-                    successors = list(gx2.successors(pyside2_node))
-                    matplotlib_predecessors = [p for p in predecessors if p == "matplotlib" or p == "matplotlib-feedstock" or 
-                                              (p in gx2.nodes and 
-                                               gx2.nodes[p].get("payload", {}).get("name") == "matplotlib")]
-                    matplotlib_successors = [s for s in successors if s == "matplotlib" or s == "matplotlib-feedstock" or 
-                                            (s in gx2.nodes and 
-                                             gx2.nodes[s].get("payload", {}).get("name") == "matplotlib")]
-                    print(f"[DEBUG pyside2 status_report] pyside2 node {pyside2_node} has {len(predecessors)} predecessors, {len(successors)} successors", flush=True)
-                    if matplotlib_predecessors:
-                        print(f"[DEBUG pyside2 status_report] matplotlib is a PREDECESSOR (dependency) of pyside2: {matplotlib_predecessors}", flush=True)
-                    if matplotlib_successors:
-                        print(f"[DEBUG pyside2 status_report] matplotlib is a SUCCESSOR (dependent) of pyside2: {matplotlib_successors}", flush=True)
-                    # Check all predecessors for matplotlib
-                    for pred in predecessors[:10]:  # Check first 10
-                        try:
-                            with gx2.nodes[pred]["payload"] as pred_attrs:
-                                pred_name = pred_attrs.get("name", "")
-                                if "matplotlib" in pred_name.lower():
-                                    print(f"[DEBUG pyside2 status_report] pyside2 depends on: {pred} (name={pred_name})", flush=True)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    print(f"[DEBUG pyside2 status_report] Error checking relationships: {e}", flush=True)
-    else:
-        print(f"[DEBUG pyside2 status_report] pyside2 NOT found in graph nodes", flush=True)
-        # Check all nodes for pyside2
-        pyside_related = []
-        for check_node in all_nodes:
-            try:
-                with gx2.nodes[check_node]["payload"] as check_attrs:
-                    check_name = check_attrs.get("name", "")
-                    check_feedstock = check_attrs.get("feedstock_name", "")
-                    if "pyside" in check_name.lower() or "pyside" in check_feedstock.lower() or "pyside" in check_node.lower():
-                        pyside_related.append((check_node, check_name, check_feedstock))
-            except Exception:
-                pass
-        if pyside_related:
-            print(f"[DEBUG status_report] Found {len(pyside_related)} pyside-related nodes:", flush=True)
-            for node, name, feedstock in pyside_related[:20]:  # Show first 20
-                print(f"[DEBUG status_report]   - {node} (name={name}, feedstock={feedstock})", flush=True)
-    
-    if matplotlib_nodes_in_graph:
-        print(f"[DEBUG matplotlib status_report] matplotlib found in graph: {matplotlib_nodes_in_graph}", flush=True)
-    else:
-        print(f"[DEBUG matplotlib status_report] matplotlib NOT found in graph nodes", flush=True)
 
-    for idx, (node, node_attrs) in enumerate(gx2.nodes.items()):
+    for node, node_attrs in gx2.nodes.items():
         attrs = node_attrs["payload"]
-        node_name = attrs.get("name", "")
-        feedstock_name = attrs.get("feedstock_name", "")
-        # Check if this is pyside2: node name, package name, or feedstock name
-        is_pyside2 = (node == "pyside2" or node == "pyside2-feedstock" or 
-                     node_name == "pyside2" or feedstock_name == "pyside2" or 
-                     feedstock_name == "pyside2-feedstock")
-        # Check if this is matplotlib: node name, package name, or feedstock name
-        is_matplotlib = (node == "matplotlib" or node == "matplotlib-feedstock" or 
-                        node_name == "matplotlib" or feedstock_name == "matplotlib" or 
-                        feedstock_name == "matplotlib-feedstock")
-        
-        # Print progress every 100 packages or for pyside2/matplotlib
-        if is_pyside2 or is_matplotlib or idx % 100 == 0:
-            print(f"[DEBUG status_report] Processing package {idx+1}/{len(all_nodes)}: node={node}, name={node_name}, feedstock={feedstock_name}", flush=True)
-        
-        if is_pyside2:
-            print(f"[DEBUG pyside2 status_report] ===== PROCESSING NODE: node={node}, name={node_name}, feedstock_name={feedstock_name} =====", flush=True)
-            print(f"[DEBUG pyside2 status_report] archived={attrs.get('archived', False)}", flush=True)
-        
-        if is_matplotlib:
-            print(f"[DEBUG matplotlib status_report] ===== PROCESSING NODE: node={node}, name={node_name}, feedstock_name={feedstock_name} =====", flush=True)
-            print(f"[DEBUG matplotlib status_report] archived={attrs.get('archived', False)}", flush=True)
-            # Check relationship to pyside2
-            try:
-                predecessors = list(gx2.predecessors(node))
-                successors = list(gx2.successors(node))
-                pyside2_predecessors = [p for p in predecessors if p == "pyside2" or p == "pyside2-feedstock" or 
-                                       (p in gx2.nodes and 
-                                        gx2.nodes[p].get("payload", {}).get("name") == "pyside2")]
-                pyside2_successors = [s for s in successors if s == "pyside2" or s == "pyside2-feedstock" or 
-                                     (s in gx2.nodes and 
-                                      gx2.nodes[s].get("payload", {}).get("name") == "pyside2")]
-                if pyside2_predecessors:
-                    print(f"[DEBUG matplotlib status_report] pyside2 is a PREDECESSOR (dependency) of matplotlib: {pyside2_predecessors}", flush=True)
-                if pyside2_successors:
-                    print(f"[DEBUG matplotlib status_report] pyside2 is a SUCCESSOR (dependent) of matplotlib: {pyside2_successors}", flush=True)
-            except Exception as e:
-                print(f"[DEBUG matplotlib status_report] Error checking pyside2 relationship: {e}", flush=True)
         
         # remove archived from status
         if attrs.get("archived", False):
-            if is_pyside2:
-                print(f"[DEBUG pyside2 status_report] SKIPPING (archived)", flush=True)
-            if is_matplotlib:
-                print(f"[DEBUG matplotlib status_report] SKIPPING (archived)", flush=True)
             continue
         node_metadata: Dict = {}
         feedstock_metadata[node] = node_metadata
@@ -368,51 +286,8 @@ def graph_migrator_status(
         else:
             pr_is_archiveable = False
 
-        node_name = attrs.get("name", "")
-        feedstock_name = attrs.get("feedstock_name", "")
-        # Check if this is pyside2: node name, package name, or feedstock name
-        is_pyside2 = (node == "pyside2" or node == "pyside2-feedstock" or 
-                     node_name == "pyside2" or feedstock_name == "pyside2" or 
-                     feedstock_name == "pyside2-feedstock")
-        # Check if this is matplotlib: node name, package name, or feedstock name
-        is_matplotlib = (node == "matplotlib" or node == "matplotlib-feedstock" or 
-                        node_name == "matplotlib" or feedstock_name == "matplotlib" or 
-                        feedstock_name == "matplotlib-feedstock")
-        
-        if is_pyside2:
-            print(f"[DEBUG pyside2 status_report] START: node={node}, name={node_name}, feedstock_name={feedstock_name}", flush=True)
-            print(f"[DEBUG pyside2 status_report] migrator_name={migrator_name}", flush=True)
-            print(f"[DEBUG pyside2 status_report] migrator_class={migrator.__class__.__name__}", flush=True)
-            print(f"[DEBUG pyside2 status_report] calling migrator.filter(attrs)...", flush=True)
-        
-        if is_matplotlib:
-            print(f"[DEBUG matplotlib status_report] START: node={node}, name={node_name}, feedstock_name={feedstock_name}", flush=True)
-            print(f"[DEBUG matplotlib status_report] migrator_name={migrator_name}", flush=True)
-            print(f"[DEBUG matplotlib status_report] migrator_class={migrator.__class__.__name__}", flush=True)
-            print(f"[DEBUG matplotlib status_report] calling migrator.filter(attrs)...", flush=True)
-        
         filter_result = migrator.filter(attrs)
         buildable = not filter_result
-        
-        if is_pyside2:
-            print(f"[DEBUG pyside2 status_report] migrator.filter() returned={filter_result}", flush=True)
-            print(f"[DEBUG pyside2 status_report] buildable={buildable}", flush=True)
-            print(f"[DEBUG pyside2 status_report] pr_json is None={pr_json is None}", flush=True)
-            print(f"[DEBUG pyside2 status_report] manually_done={manually_done}", flush=True)
-            print(f"[DEBUG pyside2 status_report] pr_is_archiveable={pr_is_archiveable}", flush=True)
-            pre_pr_status = attrs.get("pr_info", {}).get("pre_pr_migrator_status", {}).get(migrator_name, "")
-            print(f"[DEBUG pyside2 status_report] pre_pr_migrator_status={pre_pr_status}", flush=True)
-            print(f"[DEBUG pyside2 status_report] parsing_error={attrs.get('parsing_error', 'N/A')}", flush=True)
-        
-        if is_matplotlib:
-            print(f"[DEBUG matplotlib status_report] migrator.filter() returned={filter_result}", flush=True)
-            print(f"[DEBUG matplotlib status_report] buildable={buildable}", flush=True)
-            print(f"[DEBUG matplotlib status_report] pr_json is None={pr_json is None}", flush=True)
-            print(f"[DEBUG matplotlib status_report] manually_done={manually_done}", flush=True)
-            print(f"[DEBUG matplotlib status_report] pr_is_archiveable={pr_is_archiveable}", flush=True)
-            pre_pr_status = attrs.get("pr_info", {}).get("pre_pr_migrator_status", {}).get(migrator_name, "")
-            print(f"[DEBUG matplotlib status_report] pre_pr_migrator_status={pre_pr_status}", flush=True)
-            print(f"[DEBUG matplotlib status_report] parsing_error={attrs.get('parsing_error', 'N/A')}", flush=True)
         
         fntc = "black"
         status_icon = ""
@@ -420,10 +295,6 @@ def graph_migrator_status(
             out["done"].add(node)
             fc = "#440154"
             fntc = "white"
-            if is_pyside2:
-                print(f"[DEBUG pyside2 status_report] STATUS: done (manually_done)", flush=True)
-            if is_matplotlib:
-                print(f"[DEBUG matplotlib status_report] STATUS: done (manually_done)", flush=True)
         elif pr_json is None:
             if buildable:
                 if "not solvable" in (
@@ -433,10 +304,6 @@ def graph_migrator_status(
                 ):
                     out["not-solvable"].add(node)
                     fc = "#ff8c00"
-                    if is_pyside2:
-                        print(f"[DEBUG pyside2 status_report] STATUS: not-solvable", flush=True)
-                    if is_matplotlib:
-                        print(f"[DEBUG matplotlib status_report] STATUS: not-solvable", flush=True)
                 elif "bot error" in (
                     attrs.get("pr_info", {})
                     .get("pre_pr_migrator_status", {})
@@ -445,17 +312,9 @@ def graph_migrator_status(
                     out["bot-error"].add(node)
                     fc = "#000000"
                     fntc = "white"
-                    if is_pyside2:
-                        print(f"[DEBUG pyside2 status_report] STATUS: bot-error", flush=True)
-                    if is_matplotlib:
-                        print(f"[DEBUG matplotlib status_report] STATUS: bot-error", flush=True)
                 else:
                     out["awaiting-pr"].add(node)
                     fc = "#35b779"
-                    if is_pyside2:
-                        print(f"[DEBUG pyside2 status_report] STATUS: awaiting-pr", flush=True)
-                    if is_matplotlib:
-                        print(f"[DEBUG matplotlib status_report] STATUS: awaiting-pr", flush=True)
             else:
                 if "bot error" in (
                     attrs.get("pr_info", {})
@@ -465,17 +324,9 @@ def graph_migrator_status(
                     out["bot-error"].add(node)
                     fc = "#000000"
                     fntc = "white"
-                    if is_pyside2:
-                        print(f"[DEBUG pyside2 status_report] STATUS: bot-error", flush=True)
-                    if is_matplotlib:
-                        print(f"[DEBUG matplotlib status_report] STATUS: bot-error", flush=True)
                 else:
                     out["awaiting-parents"].add(node)
                     fc = "#fde725"
-                    if is_pyside2:
-                        print(f"[DEBUG pyside2 status_report] STATUS: awaiting-parents (buildable=False)", flush=True)
-                    if is_matplotlib:
-                        print(f"[DEBUG matplotlib status_report] STATUS: awaiting-parents (buildable=False)", flush=True)
         elif "PR" not in pr_json or "state" not in pr_json["PR"]:
             out["bot-error"].add(node)
             fc = "#000000"
@@ -516,6 +367,12 @@ def graph_migrator_status(
             for k in sorted(gx2.successors(node))
             if not gx2[k].get("payload", {}).get("archived", False)
         ]
+        
+        # Check if waiting for other migrators
+        waiting_migrators = _get_waiting_migrators(migrator, attrs)
+        if waiting_migrators:
+            node_metadata["waiting_for_migrators"] = waiting_migrators
+        
         if node in out["not-solvable"] or node in out["bot-error"]:
             node_metadata["pre_pr_migrator_status"] = (
                 attrs.get("pr_info", {})
@@ -557,6 +414,8 @@ def graph_migrator_status(
         )
 
     out2["_feedstock_status"] = feedstock_metadata
+    
+    # Add edges for actual dependencies
     for (e0, e1), edge_attrs in gx2.edges.items():
         if (
             e0 not in out["done"]
@@ -565,6 +424,18 @@ def graph_migrator_status(
             and not gx2.nodes[e1]["payload"].get("archived", False)
         ):
             gv.edge(e0, e1)
+    
+    # Add virtual edges for packages waiting for migrators
+    # These show up as if the migrator were a blocking dependency
+    for node, metadata in feedstock_metadata.items():
+        waiting_migrators = metadata.get("waiting_for_migrators", [])
+        if waiting_migrators and node not in out["done"]:
+            for migrator_name in waiting_migrators:
+                # Create a virtual node name for the migrator
+                migrator_node = f"__migrator_{migrator_name}__"
+                # Add edge from migrator to package (migrator blocks package)
+                # Use a dashed style to distinguish from real dependencies
+                gv.edge(migrator_node, node)
 
     print("    len(gv):", num_viz, flush=True)
     out2["_num_viz"] = num_viz
@@ -636,17 +507,13 @@ def main(migrator_filter: str | None = None) -> None:
             ]["version"],
         )
         # Use cached graph reference (read-only) to avoid deep copy
-        print(f"[DEBUG status_report] loading graph...", flush=True)
         gx = load_existing_graph(deep_copy=False)
-        print(f"[DEBUG status_report] loaded graph with {len(gx.nodes)} nodes, id={id(gx)}", flush=True)
         mctx = MigratorSessionContext(
             graph=gx,
             smithy_version=smithy_version,
             pinning_version=pinning_version,
         )
-        print(f"[DEBUG status_report] loading migrators...", flush=True)
         migrators = load_migrators(skip_paused=False, filter_name=migrator_filter)
-        print(f"[DEBUG status_report] loaded {len(migrators)} migrators", flush=True)
 
     os.makedirs("./status/migration_json", exist_ok=True)
     os.makedirs("./status/migration_svg", exist_ok=True)
@@ -667,42 +534,6 @@ def main(migrator_filter: str | None = None) -> None:
             flush=True,
         )
         print("name:", migrator_name, flush=True)
-        print(f"[DEBUG status_report] Processing migrator: {migrator_name} ({migrator.__class__.__name__})", flush=True)
-        
-        # Check if this migrator's graph contains pyside2
-        migrator_graph = getattr(migrator, "graph", None)
-        if migrator_graph:
-            migrator_nodes = list(migrator_graph.nodes.keys())
-            pyside2_in_migrator_graph = []
-            matplotlib_in_migrator_graph = []
-            for n in migrator_nodes:
-                if n == "pyside2" or n == "pyside2-feedstock":
-                    pyside2_in_migrator_graph.append(n)
-                elif n == "matplotlib" or n == "matplotlib-feedstock":
-                    matplotlib_in_migrator_graph.append(n)
-                else:
-                    try:
-                        with migrator_graph.nodes[n]["payload"] as attrs:
-                            name = attrs.get("name", "")
-                            feedstock_name = attrs.get("feedstock_name", "")
-                            if (name == "pyside2" or feedstock_name == "pyside2" or 
-                                feedstock_name == "pyside2-feedstock"):
-                                pyside2_in_migrator_graph.append(n)
-                            elif (name == "matplotlib" or feedstock_name == "matplotlib" or 
-                                  feedstock_name == "matplotlib-feedstock"):
-                                matplotlib_in_migrator_graph.append(n)
-                    except Exception:
-                        pass
-            if pyside2_in_migrator_graph:
-                print(f"[DEBUG pyside2 status_report] pyside2 found in migrator {migrator_name} graph: {pyside2_in_migrator_graph}", flush=True)
-            else:
-                print(f"[DEBUG pyside2 status_report] pyside2 NOT in migrator {migrator_name} graph (has {len(migrator_nodes)} nodes)", flush=True)
-            if matplotlib_in_migrator_graph:
-                print(f"[DEBUG matplotlib status_report] matplotlib found in migrator {migrator_name} graph: {matplotlib_in_migrator_graph}", flush=True)
-            else:
-                print(f"[DEBUG matplotlib status_report] matplotlib NOT in migrator {migrator_name} graph (has {len(migrator_nodes)} nodes)", flush=True)
-        else:
-            print(f"[DEBUG pyside2 status_report] migrator {migrator_name} has no graph attribute", flush=True)
 
         if (
             isinstance(migrator, GraphMigrator)

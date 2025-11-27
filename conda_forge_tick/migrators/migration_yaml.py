@@ -421,8 +421,11 @@ class MigrationYaml(GraphMigrator):
             attrs.get("name", ""),
             wait_for_migrators,
         )
+        
+        super_result = super().filter_node_migrated(attrs, not_bad_str_start)
+        final_result = need_to_wait or super_result
 
-        return need_to_wait or super().filter_node_migrated(attrs, not_bad_str_start)
+        return final_result
 
     def migrate(
         self, recipe_dir: str, attrs: "AttrsTypedDict", **kwargs: Any

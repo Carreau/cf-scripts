@@ -477,20 +477,9 @@ class Migrator:
         bool :
             True if node is to be skipped
         """
-        __name = attrs.get("name", "")
-        __feedstock_name = attrs.get("feedstock_name", "")
-        
         filter_not_in = self.filter_not_in_migration(attrs, not_bad_str_start)
         filter_migrated = self.filter_node_migrated(attrs, not_bad_str_start)
         result = filter_not_in or filter_migrated
-        
-        if __name == "pyside2" or __feedstock_name == "pyside2-feedstock":
-            print(f"[DEBUG pyside2 filter] name={__name}, feedstock_name={__feedstock_name}")
-            print(f"[DEBUG pyside2 filter] migrator_class={self.__class__.__name__}")
-            print(f"[DEBUG pyside2 filter] filter_not_in_migration={filter_not_in}")
-            print(f"[DEBUG pyside2 filter] filter_node_migrated={filter_migrated}")
-            print(f"[DEBUG pyside2 filter] final_result={result}")
-            print(f"[DEBUG pyside2 filter] not_bad_str_start={not_bad_str_start}")
         
         return result
 
@@ -507,16 +496,6 @@ class Migrator:
         archived = attrs.get("archived", False)
         bad_attr = _parse_bad_attr(attrs, not_bad_str_start)
         schema_skip = skip_migrator_due_to_schema(attrs, self.allowed_schema_versions)
-        
-        if __name == "pyside2" or __feedstock_name == "pyside2-feedstock":
-            print(f"[DEBUG pyside2 filter_not_in_migration] name={__name}, feedstock_name={__feedstock_name}")
-            print(f"[DEBUG pyside2 filter_not_in_migration] archived={archived}")
-            print(f"[DEBUG pyside2 filter_not_in_migration] bad_attr={bad_attr}")
-            print(f"[DEBUG pyside2 filter_not_in_migration] schema_skip={schema_skip}")
-            print(f"[DEBUG pyside2 filter_not_in_migration] allowed_schema_versions={self.allowed_schema_versions}")
-            print(f"[DEBUG pyside2 filter_not_in_migration] pr_info.bad={attrs.get('pr_info', {}).get('bad', 'N/A')}")
-            print(f"[DEBUG pyside2 filter_not_in_migration] parsing_error={attrs.get('parsing_error', 'N/A')}")
-            print(f"[DEBUG pyside2 filter_not_in_migration] result={archived or bad_attr or schema_skip}")
 
         if archived:
             logger.debug("%s: archived", __name)
@@ -534,7 +513,6 @@ class Migrator:
 
         __name = attrs.get("name", "")
         __feedstock_name = attrs.get("feedstock_name", "")
-        is_pyside2 = __name == "pyside2" or __feedstock_name == "pyside2-feedstock"
 
         pr_data = frozen_to_json_friendly(self.migrator_uid(attrs))
         migrator_uid: "MigrationUidTypedDict" = typing.cast(
@@ -546,14 +524,6 @@ class Migrator:
             for z in attrs.get("pr_info", {}).get("PRed", [])  # type: ignore[call-overload]
         )
         already_pred = migrator_uid in already_migrated_uids
-        
-        if is_pyside2:
-            print(f"[DEBUG pyside2 base filter_node_migrated] name={__name}, feedstock_name={__feedstock_name}")
-            print(f"[DEBUG pyside2 base filter_node_migrated] migrator_uid={migrator_uid}")
-            print(f"[DEBUG pyside2 base filter_node_migrated] num_already_migrated_uids={len(already_migrated_uids)}")
-            print(f"[DEBUG pyside2 base filter_node_migrated] already_migrated_uids={already_migrated_uids}")
-            print(f"[DEBUG pyside2 base filter_node_migrated] already_pred={already_pred}")
-            print(f"[DEBUG pyside2 base filter_node_migrated] num_PRed={len(attrs.get('pr_info', {}).get('PRed', []))}")
         
         if already_pred:
             ind = already_migrated_uids.index(migrator_uid)
@@ -948,34 +918,17 @@ class GraphMigrator(Migrator):
         if self.graph is None:
             raise ValueError("graph is None")
         
-        __name = attrs.get("name", "")
-        __feedstock_name = attrs.get("feedstock_name", "")
-        is_pyside2 = __name == "pyside2" or __feedstock_name == "pyside2-feedstock"
-        
         predecessors = list(self.graph.predecessors(attrs["feedstock_name"]))
         ignored_deps = self.ignored_deps_per_node.get(
             attrs.get("feedstock_name", None),
             [],
         )
         
-        if is_pyside2:
-            print(f"[DEBUG pyside2 predecessors_not_yet_built] name={__name}, feedstock_name={__feedstock_name}")
-            print(f"[DEBUG pyside2 predecessors_not_yet_built] num_predecessors={len(predecessors)}")
-            print(f"[DEBUG pyside2 predecessors_not_yet_built] predecessors={predecessors}")
-            print(f"[DEBUG pyside2 predecessors_not_yet_built] ignored_deps={ignored_deps}")
-            print(f"[DEBUG pyside2 predecessors_not_yet_built] migrator_name={getattr(self, 'name', 'N/A')}")
-            print(f"[DEBUG pyside2 predecessors_not_yet_built] migrator_class={self.__class__.__name__}")
-        
-        if is_pyside2 and len(predecessors) == 0:
-            print(f"[DEBUG pyside2 predecessors_not_yet_built] WARNING: No predecessors found!")
-        
         for node, payload in _gen_active_feedstocks_payloads(
             predecessors,
             self.graph,
         ):
             if node in ignored_deps:
-                if is_pyside2:
-                    print(f"[DEBUG pyside2] ignoring predecessor {node} (in ignored_deps)")
                 continue
 
             muid = frozen_to_json_friendly(self.migrator_uid(payload))
@@ -983,16 +936,7 @@ class GraphMigrator(Migrator):
             sanitized_muids = _sanitized_muids(pred_pr_ed)
             muid_in_pr_ed = muid in sanitized_muids
 
-            if is_pyside2:
-                print(f"[DEBUG pyside2] checking predecessor: {node}")
-                print(f"  muid={muid}")
-                print(f"  muid_in_pr_ed={muid_in_pr_ed}")
-                print(f"  num_pr_ed={len(pred_pr_ed)}")
-                print(f"  sanitized_muids={sanitized_muids}")
-
             if not muid_in_pr_ed:
-                if is_pyside2:
-                    print(f"[DEBUG pyside2] predecessor {node} NOT YET BUILT (muid not in PRed)")
                 logger.debug("not yet built: %s", node)
                 return True
 
@@ -1007,24 +951,10 @@ class GraphMigrator(Migrator):
             # so that errors halt the migration and can be fixed
             if m_pred_json:
                 pr_state = m_pred_json.get("PR", {"state": "open"}).get("state", "")
-                if is_pyside2:
-                    print(f"[DEBUG pyside2] predecessor {node} has PR with state={pr_state}")
-                    print(f"  m_pred_json keys={list(m_pred_json.keys())}")
-                    if "PR" in m_pred_json:
-                        pr_data = m_pred_json["PR"]
-                        if isinstance(pr_data, dict):
-                            print(f"  PR data keys={list(pr_data.keys())}")
                 if pr_state == "open":
-                    if is_pyside2:
-                        print(f"[DEBUG pyside2] predecessor {node} NOT YET BUILT (PR still open)")
                     logger.debug("not yet built: %s", node)
                     return True
-            else:
-                if is_pyside2:
-                    print(f"[DEBUG pyside2] predecessor {node} muid found in PRed but no PR json")
 
-        if is_pyside2:
-            print(f"[DEBUG pyside2] all predecessors built - returning False")
         return False
 
     def filter_not_in_migration(self, attrs, not_bad_str_start=""):
@@ -1045,33 +975,18 @@ class GraphMigrator(Migrator):
     def filter_node_migrated(self, attrs, not_bad_str_start=""):
         name = attrs.get("name", "")
         __feedstock_name = attrs.get("feedstock_name", "")
-        is_pyside2 = name == "pyside2" or __feedstock_name == "pyside2-feedstock"
 
         # If in top level or in a cycle don't check for upstreams just build
         is_top_level = (attrs["feedstock_name"] in self.top_level) or (
             attrs["feedstock_name"] in self.cycles
         )
         
-        if is_pyside2:
-            print(f"[DEBUG pyside2 GraphBased filter_node_migrated] name={name}, feedstock_name={__feedstock_name}")
-            print(f"[DEBUG pyside2 GraphBased filter_node_migrated] is_top_level={is_top_level}")
-            if hasattr(self, "top_level"):
-                print(f"[DEBUG pyside2 GraphBased filter_node_migrated] top_level={list(self.top_level)}")
-                print(f"[DEBUG pyside2 GraphBased filter_node_migrated] feedstock in top_level={__feedstock_name in self.top_level}")
-            if hasattr(self, "cycles"):
-                print(f"[DEBUG pyside2 GraphBased filter_node_migrated] cycles={list(self.cycles)}")
-                print(f"[DEBUG pyside2 GraphBased filter_node_migrated] feedstock in cycles={__feedstock_name in self.cycles}")
-        
         if is_top_level:
             logger.debug("not filtered %s: top level", name)
             node_is_ready = True
-            if is_pyside2:
-                print(f"[DEBUG pyside2 GraphBased filter_node_migrated] node_is_ready=True (top level)")
         else:
             if name == "conda-forge-pinning":
                 all_issued = self.all_predecessors_issued(attrs=attrs)
-                if is_pyside2:
-                    print(f"[DEBUG pyside2 GraphBased filter_node_migrated] conda-forge-pinning check, all_predecessors_issued={all_issued}")
                 if all_issued:
                     node_is_ready = True
                 else:
@@ -1080,25 +995,14 @@ class GraphMigrator(Migrator):
             else:
                 # Check if all upstreams have been built
                 preds_not_built = self.predecessors_not_yet_built(attrs=attrs)
-                if is_pyside2:
-                    print(f"[DEBUG pyside2 GraphBased filter_node_migrated] predecessors_not_yet_built={preds_not_built}")
                 if preds_not_built:
                     logger.debug("filter %s: parents not built", name)
                     node_is_ready = False
-                    if is_pyside2:
-                        print(f"[DEBUG pyside2 GraphBased filter_node_migrated] node_is_ready=False (parents not built)")
                 else:
                     node_is_ready = True
-                    if is_pyside2:
-                        print(f"[DEBUG pyside2 GraphBased filter_node_migrated] node_is_ready=True (all parents built)")
 
         super_result = super().filter_node_migrated(attrs, "Upstream:")
         final_result = (not node_is_ready) or super_result
-        
-        if is_pyside2:
-            print(f"[DEBUG pyside2 GraphBased filter_node_migrated] node_is_ready={node_is_ready}")
-            print(f"[DEBUG pyside2 GraphBased filter_node_migrated] super().filter_node_migrated={super_result}")
-            print(f"[DEBUG pyside2 GraphBased filter_node_migrated] final_result={final_result}")
 
         return final_result
 

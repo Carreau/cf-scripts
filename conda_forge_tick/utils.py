@@ -127,14 +127,12 @@ _graph_cache: dict[str, tuple[nx.DiGraph, float]] = {}
 def _get_graph_cache_enabled() -> bool:
     """Check if graph caching is enabled via environment variable."""
     enabled = os.environ.get("CF_TICK_GRAPH_CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
-    print(f"[DEBUG _get_graph_cache_enabled] cache_enabled={enabled} (from env: {os.environ.get('CF_TICK_GRAPH_CACHE_ENABLED', 'default=true')})", flush=True)
     return enabled
 
 
 def _get_graph_deep_copy_default() -> bool:
     """Get default deep copy setting from environment variable."""
     deep_copy = os.environ.get("CF_TICK_GRAPH_DEEP_COPY", "false").lower() in ("true", "1", "yes")
-    print(f"[DEBUG _get_graph_deep_copy_default] deep_copy_default={deep_copy} (from env: {os.environ.get('CF_TICK_GRAPH_DEEP_COPY', 'default=false')})", flush=True)
     return deep_copy
 
 
@@ -157,14 +155,10 @@ def _clear_graph_cache(filename: str | None = None) -> None:
     """
     global _graph_cache
     if filename is None:
-        print(f"[DEBUG _clear_graph_cache] clearing all cache entries (had {len(_graph_cache)} entries)", flush=True)
         _graph_cache.clear()
     else:
         if filename in _graph_cache:
-            print(f"[DEBUG _clear_graph_cache] clearing cache for {filename}", flush=True)
             _graph_cache.pop(filename, None)
-        else:
-            print(f"[DEBUG _clear_graph_cache] {filename} not in cache (cache_keys={list(_graph_cache.keys())})", flush=True)
 
 
 def parse_munged_run_export(p: str) -> Dict:
@@ -1362,12 +1356,9 @@ def load_existing_graph(
     ValueError
         If the file contains empty JSON.
     """
-    print(f"[DEBUG load_existing_graph] called with filename={filename}, deep_copy={deep_copy}", flush=True)
     gx = load_graph(filename, deep_copy=deep_copy)
     if gx is None:
-        print(f"[DEBUG load_existing_graph] ERROR: graph is None, raising ValueError", flush=True)
         raise ValueError(f"Graph file {filename} contains empty JSON")
-    print(f"[DEBUG load_existing_graph] returning graph with {len(gx.nodes)} nodes", flush=True)
     return gx
 
 
@@ -1399,53 +1390,38 @@ def load_graph(
     
     cache_enabled = _get_graph_cache_enabled()
     
-    print(f"[DEBUG load_graph] filename={filename}, deep_copy={deep_copy}, cache_enabled={cache_enabled}", flush=True)
-    
     # Check cache if enabled
     if cache_enabled:
         file_mtime = _get_file_mtime(filename)
-        print(f"[DEBUG load_graph] file_mtime={file_mtime}, cache_keys={list(_graph_cache.keys())}", flush=True)
         if filename in _graph_cache:
             cached_graph, cached_mtime = _graph_cache[filename]
-            print(f"[DEBUG load_graph] cache hit! cached_mtime={cached_mtime}, file_mtime={file_mtime}", flush=True)
             # Use cache if file hasn't changed
             if cached_mtime == file_mtime:
                 if deep_copy:
-                    print(f"[DEBUG load_graph] returning deep copy of cached graph", flush=True)
                     return copy.deepcopy(cached_graph)
                 else:
-                    print(f"[DEBUG load_graph] returning cached graph reference", flush=True)
                     return cached_graph
             else:
                 # File changed, clear cache entry
-                print(f"[DEBUG load_graph] file changed! clearing cache (cached_mtime={cached_mtime} != file_mtime={file_mtime})", flush=True)
                 _clear_graph_cache(filename)
-        else:
-            print(f"[DEBUG load_graph] cache miss for {filename}", flush=True)
     
     # Load graph from file
-    print(f"[DEBUG load_graph] loading graph from file {filename}", flush=True)
     # Always load data without deep copy first (nx.node_link_graph creates new objects)
     dta = LazyJson(filename).data
     
     if dta:
         graph = nx.node_link_graph(dta, edges="links")
-        print(f"[DEBUG load_graph] created graph with {len(graph.nodes)} nodes, {len(graph.edges)} edges", flush=True)
         
         # Cache the graph if enabled and we don't need a deep copy
         if cache_enabled and not deep_copy:
             file_mtime = _get_file_mtime(filename)
             _graph_cache[filename] = (graph, file_mtime)
-            print(f"[DEBUG load_graph] cached graph with mtime={file_mtime}", flush=True)
         
         # Return deep copy if requested, otherwise return the graph directly
         if deep_copy:
-            print(f"[DEBUG load_graph] returning deep copy of graph", flush=True)
             return copy.deepcopy(graph)
-        print(f"[DEBUG load_graph] returning graph reference", flush=True)
         return graph
     else:
-        print(f"[DEBUG load_graph] graph data is empty, returning None", flush=True)
         return None
 
 

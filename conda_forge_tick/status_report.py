@@ -223,6 +223,7 @@ def graph_migrator_status(
 
     gx2 = copy.deepcopy(getattr(migrator, "graph", gx))
 
+    # Calculate build sequence before adding fake migrator nodes
     top_level = {node for node in gx2 if not list(gx2.predecessors(node))}
     build_sequence = list(cyclic_topological_sort(gx2, top_level))
 
@@ -238,7 +239,44 @@ def graph_migrator_status(
         gx2.remove_node("conda-forge-pinning")
 
 
+    # First pass: collect waiting migrators info without modifying the graph
+    waiting_migrators_map: Dict[str, list[str]] = {}
+    for node, node_attrs in list(gx2.nodes.items()):
+        # Skip fake migrator nodes - they'll be handled separately
+        if node.startswith("migrator_"):
+            continue
+
+        attrs = node_attrs["payload"]
+
+        # remove archived from status
+        if attrs.get("archived", False):
+            continue
+
+        # Check if waiting for other migrators
+        waiting_migrators = _get_waiting_migrators(migrator, attrs)
+        if waiting_migrators:
+            waiting_migrators_map[node] = waiting_migrators
+
+    # Add fake migrator nodes and edges after collecting all info
+    for node, migrator_names in waiting_migrators_map.items():
+        for migrator_name in migrator_names:
+            # Create fake parent node name
+            # Use underscore instead of colon to avoid Graphviz port separator interpretation
+            fake_parent = f"migrator_{migrator_name}"
+            # Add fake node to graph if it doesn't exist
+            if fake_parent not in gx2.nodes():
+                gx2.add_node(fake_parent, payload={})
+            # Add edge from fake migrator node to waiting package
+            # (migrator blocks package, so migrator -> package)
+            if not gx2.has_edge(fake_parent, node):
+                gx2.add_edge(fake_parent, node)
+
+    # Second pass: process nodes for status and visualization
     for node, node_attrs in gx2.nodes.items():
+        # Skip fake migrator nodes - they'll be handled separately
+        if node.startswith("migrator_"):
+            continue
+
         attrs = node_attrs["payload"]
         
         # remove archived from status
@@ -368,11 +406,6 @@ def graph_migrator_status(
             if not gx2[k].get("payload", {}).get("archived", False)
         ]
         
-        # Check if waiting for other migrators
-        waiting_migrators = _get_waiting_migrators(migrator, attrs)
-        if waiting_migrators:
-            node_metadata["waiting_for_migrators"] = waiting_migrators
-        
         if node in out["not-solvable"] or node in out["bot-error"]:
             node_metadata["pre_pr_migrator_status"] = (
                 attrs.get("pr_info", {})
@@ -399,15 +432,36 @@ def graph_migrator_status(
                     timestamp = dateutil.parser.parse(timestamp)
                     if timestamp.tzinfo is None:
                         timestamp = timestamp.replace(tzinfo=datetime.timezone.utc)
-                    node_metadata[timestamp_field] = timestamp.isoformat()
+                    pass
+                    # node_metadata[timestamp_field] = timestamp.isoformat()
+
+    # Add fake migrator nodes to awaiting-parents BEFORE sorting
+    for node_name in gx2.nodes():
+        if node_name.startswith("migrator_"):
+            out["awaiting-parents"].add(node_name)
+            # Add metadata for fake migrator nodes with same structure as regular nodes
+            migrator_metadata: Dict = {}
+            feedstock_metadata[node_name] = migrator_metadata
+            
+            # Populate same fields as regular nodes
+            migrator_metadata["num_descendants"] = len(nx.descendants(gx2, node_name))
+            migrator_metadata["immediate_children"] = [
+                k
+                for k in sorted(gx2.successors(node_name))
+                if not gx2[k].get("payload", {}).get("archived", False)
+            ]
+            migrator_metadata["pre_pr_migrator_status"] = ""
+            migrator_metadata["pr_url"] = ""
+            migrator_metadata["pr_status"] = ""
 
     out2: Dict = {}
     for k in out.keys():
+        # Include all items, even if not in build_sequence (like fake migrator nodes)
         out2[k] = list(
             sorted(
                 out[k],
                 key=lambda x: (
-                    build_sequence.index(x) if x in build_sequence else -1,
+                    build_sequence.index(x) if x in build_sequence else len(build_sequence),
                     x,
                 ),
             ),
@@ -417,25 +471,36 @@ def graph_migrator_status(
     
     # Add edges for actual dependencies
     for (e0, e1), edge_attrs in gx2.edges.items():
+        # Skip edges involving fake migrator nodes - handle separately
+        if e0.startswith("migrator_") or e1.startswith("migrator_"):
+            continue
+            
         if (
             e0 not in out["done"]
             and e1 not in out["done"]
-            and not gx2.nodes[e0]["payload"].get("archived", False)
-            and not gx2.nodes[e1]["payload"].get("archived", False)
+            and not gx2.nodes[e0].get("payload", {}).get("archived", False)
+            and not gx2.nodes[e1].get("payload", {}).get("archived", False)
         ):
             gv.edge(e0, e1)
     
-    # Add virtual edges for packages waiting for migrators
-    # These show up as if the migrator were a blocking dependency
-    for node, metadata in feedstock_metadata.items():
-        waiting_migrators = metadata.get("waiting_for_migrators", [])
-        if waiting_migrators and node not in out["done"]:
-            for migrator_name in waiting_migrators:
-                # Create a virtual node name for the migrator
-                migrator_node = f"__migrator_{migrator_name}__"
-                # Add edge from migrator to package (migrator blocks package)
-                # Use a dashed style to distinguish from real dependencies
-                gv.edge(migrator_node, node)
+    # Add nodes and edges for fake migrator parents in visualization
+    # (Metadata and awaiting-parents status already added above, before sorting)
+    for node_name in gx2.nodes():
+        if node_name.startswith("migrator_"):
+            migrator_display_name = node_name.replace("migrator_", "")
+            
+            # Style migrator nodes differently (awaiting-parents color is #fde725)
+            gv.node(
+                node_name,
+                label=_clean_text(migrator_display_name),
+                fillcolor="#fde725",  # Same color as awaiting-parents
+                style="filled,dashed",
+                fontcolor="black",
+            )
+            # Add edges from migrator to waiting packages with dashed style
+            for successor in gx2.successors(node_name):
+                if successor not in out["done"]:
+                    gv.edge(node_name, successor, style="dashed", color="orange")
 
     print("    len(gv):", num_viz, flush=True)
     out2["_num_viz"] = num_viz
